@@ -225,7 +225,7 @@
         <h2 class="title is-4">Illustration of Perceptual Manifold</h2>
         <div class="content has-text-centered">
           <div class="content">
-            <img src="./static/images/manifold.jpg"  style="width: 75%; display: block; margin: 0 auto;"><br>
+            <img src="./static/images/manifold.jpg"  style="width: 50%; display: block; margin: 0 auto;"><br>
             <span style="font-size: 0.8em; width: 75%; display: inline-block;">Figure 3: Illustration of different manifolds within the pixel space. The image manifold is a large manifold containing both perceptually significant information and imperceptible signals. The perceptual manifold contains perceptually important signals, providing a better target for pixel space diffusion. P-DINO and LPIPS are the two complementary perceptual supervision utilized in PixelGen.</span>
           </div>
         </div>
@@ -237,7 +237,7 @@
             PixelGen focuses on the perceptual manifold rather than the full image manifold. To this end, we introduce two complementary perceptual losses. An LPIPS loss emphasizes local textures and fine-grained details, while a Perceptual DINO (P-DINO) loss aligns global semantics using patch-level features from a frozen DINOv2 encoder.
           </p>
           <div class="content has-text-centered">
-            <img src="./static/images/method.jpg"  style="width: 75%; display: block; margin: 0 auto;"><br>
+            <img src="./static/images/method.jpg"  style="width: 60%; display: block; margin: 0 auto;"><br>
             <span style="font-size: 0.8em; width: 75%; display: inline-block;">Figure 4: Overview of PixelGen. The diffusion model directly predicts the image x instead of velocity or noise to simplify the prediction target. A flow-matching diffusion loss is retained to keep the advantages of flow matching via velocity conversion. Two complementary perceptual losses are introduced to encourage the diffusion model to focus on the perceptual manifold.</span>
           </div>
         </div>
@@ -248,8 +248,8 @@
             Perceptual supervision improves pixel diffusion by enhancing local details and global semantics. Starting from the JiT baseline, we progressively introduce the LPIPS loss and the P-DINO loss. As shown in Figure 5, the baseline model produces blurry images with weak structural consistency. After adding the LPIPS loss, local textures become sharper, and fine details are better preserved. This indicates that LPIPS effectively emphasizes perceptually important local patterns. When the P-DINO loss is further introduced, the generated images exhibit improved global structure and better semantics. These qualitative improvements are supported by quantitative results. The baseline model achieves an FID of 23.67 on ImageNet without classifier-free guidance. With LPIPS loss, the FID decreases to 10.00. After adding the P-DINO loss, it further drops to 7.46. This confirms that LPIPS and P-DINO provide complementary supervision. LPIPS focuses on local perceptual fidelity, while P-DINO enhances global semantics. Together, they guide the diffusion model toward a perceptually meaningful manifold.
           </p>
           <div class="content has-text-centered">
-            <img src="./static/images/empirical_vis.jpg"  style="width: 75%; display: block; margin: 0 auto;"><br>
-            <span style="font-size: 0.8em; width: 75%; display: inline-block;">Figure 5: Effectiveness of perceptual supervision in PixelGen. LPIPS and P-DINO losses are progressively added to a baseline pixel diffusion model. The LPIPS loss improves local texture fidelity, while P-DINO further enhances global semantics.
+            <img src="./static/images/empirical_vis.jpg"  style="width: 50%; display: block; margin: 0 auto;"><br>
+            <span style="font-size: 0.8em; width: 60%; display: inline-block;">Figure 5: Effectiveness of perceptual supervision in PixelGen. LPIPS and P-DINO losses are progressively added to a baseline pixel diffusion model. The LPIPS loss improves local texture fidelity, while P-DINO further enhances global semantics.
             </span>
           </div>
         </div>
@@ -266,33 +266,26 @@
         
         <h2 class="title is-4">Quantitative Results</h2>
         <div class="content has-text-centered">
-          <img src="./static/images/ablation_result.jpg", style="width: 90%;">
+          <img src="./static/images/ablation_result.jpg", style="width: 50%;">
           <br>
           <br>
-          <img src="./static/images/imagenet_results_wo_CFG.jpg", style="width: 90%;">
+          <img src="./static/images/imagenet_results.jpg", style="width: 100%;">
           <br>
           <br>
-          <img src="./static/images/imagenet_results_CFG.jpg", style="width: 90%;">
-          <br>
-          <br>
-          <img src="./static/images/t2i_results.jpg", style="width: 90%;">
+          <img src="./static/images/t2i_results.jpg", style="width: 100%;">
         </div>
 
         <h2 class="title is-4">Qualitative Results</h2>
         <div class="content has-text-centered">
-          <img src="./static/images/appendix_t2i_figures.jpg", style="width: 90%;">
-          <span style="font-size: 0.8em; width: 100%; display: inline-block;">Figure 5: More Qualitative results of text-to-image generation at a 512x512 resolution. Our PixelGen supports multiple languages with the Qwen3 text encoder, such as Chinese, Japanese, and English.
+          <img src="./static/images/t2i_vis2.jpg", style="width: 80%;">
+          <span style="font-size: 0.8em; width: 80%; display: inline-block;">Figure 6: More Qualitative results of text-to-image generation at a 512x512 resolution. Our PixelGen supports multiple languages with the Qwen3 text encoder, such as Chinese and English.
           </span>
           <br>
           <br>
-          <img src="./static/images/c2i_imagenet256_appendix.jpg", style="width: 90%;">
-          <span style="font-size: 0.8em; width: 100%; display: inline-block;">Figure 6: Qualitative results of class-to-image generation at a 256x256 resolution.
+          <img src="./static/images/c2i_vis1.jpg", style="width: 80%;">
+          <span style="font-size: 0.8em; width: 80%; display: inline-block;">Figure 7: Qualitative results of class-to-image generation at a 256x256 resolution.
           </span>
           <br>
-          <br>
-          <img src="./static/images/c2i_imagenet512_appendix.jpg", style="width: 90%;">
-          <span style="font-size: 0.8em; width: 100%; display: inline-block;">Figure 7: Qualitative results of class-to-image generation at a 512x512 resolution.
-          </span>
         </div>
 
       </div>
