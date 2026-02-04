@@ -554,9 +554,9 @@ class PixelGenEvolution:
                     0, num_classes, (num_samples,), device=self.device
                 )
 
-        # Timestep schedule (adaptive cosine)
+        # Timestep schedule (adaptive cosine) - use same dtype as model
         t_min, t_max = 0.002, 0.998
-        t = torch.linspace(0, 1, num_steps + 1, device=self.device)
+        t = torch.linspace(0, 1, num_steps + 1, device=self.device, dtype=self.dtype)
         timesteps = t_min + (t_max - t_min) * (1 - torch.cos(t * math.pi / 2))
 
         x = noise
@@ -571,11 +571,14 @@ class PixelGenEvolution:
             # Model prediction (x_0 prediction)
             pred = self.model(x, t_batch, class_labels)
 
-            # Compute velocity
+            # Compute velocity: v = (x_0 - x_t) / (1 - t)
             v = (pred - x) / (1 - t_cur).clamp_min(0.002)
 
             # Euler step
             x = x + v * dt
+
+        # Clamp output to valid range
+        x = x.clamp(-1, 1)
 
         return x, class_labels
 
@@ -607,15 +610,18 @@ class PixelGenEvolution:
         results = {'original': x.clone()}
 
         for t_val in t_values:
-            # Create noisy version
-            t = torch.full((x.shape[0],), t_val, device=self.device)
+            # Create noisy version - use correct dtype
+            t = torch.full((x.shape[0],), t_val, device=self.device, dtype=self.dtype)
             noise = torch.randn_like(x)
 
             # Flow matching interpolation: x_t = t*x_0 + (1-t)*noise
             x_noisy = t_val * x + (1 - t_val) * noise
 
-            # Model prediction
+            # Model prediction (predicts x_0)
             x_pred = self.model(x_noisy, t, y)
+
+            # Clamp predictions to valid range
+            x_pred = x_pred.clamp(-1, 1)
 
             results[f'noisy_{t_val}'] = x_noisy.clone()
             results[f'reconstructed_{t_val}'] = x_pred.clone()
@@ -645,6 +651,21 @@ class PixelGenEvolution:
         batch = self._get_batch()
         reconstructions = self.reconstruct_batch(batch, t_values=[0.3, 0.6, 0.9])
 
+        # Debug: print value ranges
+        gen_min, gen_max = generated.min().item(), generated.max().item()
+        orig_min, orig_max = reconstructions['original'].min().item(), reconstructions['original'].max().item()
+        print(f"    Generated range: [{gen_min:.3f}, {gen_max:.3f}]")
+        print(f"    Original range: [{orig_min:.3f}, {orig_max:.3f}]")
+
+        # Check if model output is valid (not all zeros)
+        model_untrained = (abs(gen_max - gen_min) < 0.01)
+        if model_untrained:
+            print(f"    WARNING: Model appears untrained (output is constant)")
+
+        if 'reconstructed_0.6' in reconstructions:
+            recon_min, recon_max = reconstructions['reconstructed_0.6'].min().item(), reconstructions['reconstructed_0.6'].max().item()
+            print(f"    Reconstructed range: [{recon_min:.3f}, {recon_max:.3f}]")
+
         # Convert to displayable format [0, 1]
         def to_display(img):
             # Clamp and normalize from [-1, 1] to [0, 1]
@@ -654,17 +675,28 @@ class PixelGenEvolution:
         # Create image grids
         images_to_log = {}
 
-        # Generated images
+        # Generated images (or placeholder if untrained)
         gen_images = to_display(generated)
-        images_to_log['generated'] = [
-            wandb.Image(
-                gen_images[i].permute(1, 2, 0).cpu().numpy(),
-                caption=f"Class {labels[i].item()}"
-            )
-            for i in range(min(4, gen_images.shape[0]))
-        ]
+        if model_untrained:
+            # Show noise as placeholder
+            noise_placeholder = torch.rand_like(gen_images) * 0.3 + 0.35  # Gray-ish noise
+            images_to_log['generated'] = [
+                wandb.Image(
+                    noise_placeholder[i].permute(1, 2, 0).cpu().numpy(),
+                    caption=f"Untrained (gen {generation})"
+                )
+                for i in range(min(4, noise_placeholder.shape[0]))
+            ]
+        else:
+            images_to_log['generated'] = [
+                wandb.Image(
+                    gen_images[i].permute(1, 2, 0).cpu().numpy(),
+                    caption=f"Class {labels[i].item()}"
+                )
+                for i in range(min(4, gen_images.shape[0]))
+            ]
 
-        # Reconstruction comparison
+        # Reconstruction comparison - ALWAYS show original CelebA images
         original = to_display(reconstructions['original'])
 
         # Create comparison grid for t=0.6
@@ -695,8 +727,18 @@ class PixelGenEvolution:
 
             images_to_log['reconstruction'] = comparison_images
 
+        # Also log original training images separately (these should always look good)
+        original_images = [
+            wandb.Image(
+                original[i].permute(1, 2, 0).cpu().numpy(),
+                caption=f"Training sample {i+1}"
+            )
+            for i in range(min(4, original.shape[0]))
+        ]
+
         # Log all images
         self.wandb_run.log({
+            'images/training_data': original_images,  # Always show real CelebA images
             'images/generated': images_to_log.get('generated', []),
             'images/reconstruction': images_to_log.get('reconstruction', []),
             'generation': generation,

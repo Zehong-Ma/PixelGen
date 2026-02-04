@@ -134,6 +134,61 @@ class SyntheticImageDataset(torch.utils.data.Dataset):
         return normalized_image, target, metadata
 
 
+class OverfitDataset(torch.utils.data.Dataset):
+    """Dataset that repeats a single image for overfitting tests."""
+
+    def __init__(
+        self,
+        root: str,
+        resolution: int = 256,
+        num_images: int = 1,
+        center_crop: bool = True,
+    ):
+        from PIL import Image
+        import torchvision.transforms as transforms
+
+        self.root = Path(root)
+        self.resolution = resolution
+
+        # Find images
+        all_images = []
+        for ext in ['*.jpg', '*.jpeg', '*.png']:
+            all_images.extend(list(self.root.glob(ext)))
+        all_images = sorted(all_images)[:num_images]
+
+        print(f"[OverfitDataset] Loading {len(all_images)} image(s) for overfitting")
+
+        # Build transforms
+        transform_list = []
+        if center_crop:
+            transform_list.append(transforms.CenterCrop(min(178, 218)))
+        transform_list.extend([
+            transforms.Resize(resolution, interpolation=transforms.InterpolationMode.LANCZOS),
+            transforms.CenterCrop(resolution),
+            transforms.ToTensor(),
+        ])
+        self.transform = transforms.Compose(transform_list)
+
+        # Pre-load and transform images
+        self.images = []
+        for img_path in all_images:
+            img = Image.open(img_path).convert('RGB')
+            tensor = self.transform(img)
+            self.images.append(tensor)
+            print(f"    Loaded: {img_path.name} -> shape {tensor.shape}")
+
+    def __len__(self):
+        return 10000  # Fake large size for DataLoader
+
+    def __getitem__(self, idx):
+        # Always return the same image(s)
+        img_idx = idx % len(self.images)
+        raw_image = self.images[img_idx]
+        normalized = raw_image * 2 - 1  # [0,1] -> [-1,1]
+
+        return normalized, 0, {"raw_image": raw_image, "class": 0}
+
+
 class FolderImageDataset(torch.utils.data.Dataset):
     """Simple folder dataset for images (like CelebA)."""
 
@@ -241,6 +296,16 @@ def create_dataloader(config: dict, batch_size: int, use_synthetic: bool = False
             size=10000,
             resolution=img_size,
             num_classes=num_classes,
+        )
+    elif dataset_type == 'overfit':
+        # Special mode: repeat single image(s) for overfitting test
+        num_images = data_config.get('num_images', 1)
+        print(f"[INFO] OVERFIT MODE: Using {num_images} image(s)")
+        dataset = OverfitDataset(
+            root=data_dir,
+            resolution=img_size,
+            num_images=num_images,
+            center_crop=data_config.get('center_crop', True),
         )
     elif dataset_type == 'folder':
         # Simple folder of images (CelebA, custom datasets)

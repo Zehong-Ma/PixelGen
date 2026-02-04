@@ -47,7 +47,8 @@ evolution:
   noise_min: 0.00001         # Minimum noise (prevents collapse)
 
   # Voting mechanism
-  vote_threshold: 3          # Min votes to update weight
+  # NOTE: Each seed gets only 1 vote (-1, 0, or +1), so threshold must be 1
+  vote_threshold: 1          # Min votes to update weight
   update_scale: 0.001        # Magnitude of weight update
 
   # Evaluation settings

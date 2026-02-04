@@ -49,8 +49,9 @@ evolution:
   noise_min: 0.000005
 
   # Voting mechanism
-  vote_threshold: 16           # High threshold for large population
-  update_scale: 0.0004         # Small updates for stability
+  # NOTE: Each seed gets only 1 vote (-1, 0, or +1), so threshold must be 1
+  vote_threshold: 1
+  update_scale: 0.001          # Weight update magnitude
 
   # Evaluation settings - MAXIMIZED FOR 96GB
   eval_batch_size: 384         # ~64GB VRAM (32GB headroom)
