@@ -381,6 +381,10 @@ class PixelGenEvolution:
             if self.wandb_run is not None:
                 self.wandb_run.log(result.to_dict(), step=gen)
 
+                # Log sample images periodically
+                if gen % self.config.log_images_every == 0 or gen == num_generations - 1:
+                    self._log_sample_images(gen)
+
             # Callback
             if callback is not None:
                 callback(result)
@@ -490,3 +494,225 @@ class PixelGenEvolution:
             raw_dino_loss=sum(r.raw_dino_loss for r in results) / len(results),
             raw_ssim_score=sum(r.raw_ssim_score for r in results) / len(results),
         )
+
+    @torch.no_grad()
+    def generate_samples(
+        self,
+        num_samples: int = 4,
+        num_steps: int = 25,
+        seed: Optional[int] = None,
+        class_labels: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Generate sample images using current model.
+
+        Args:
+            num_samples: Number of images to generate
+            num_steps: Denoising steps
+            seed: Random seed for reproducibility
+            class_labels: Optional class labels (random if None)
+
+        Returns:
+            Tuple of (generated_images, class_labels)
+        """
+        import math
+
+        if seed is not None:
+            torch.manual_seed(seed)
+
+        # Get image size from model
+        img_size = self.model.input_size if hasattr(self.model, 'input_size') else 256
+
+        # Create noise
+        noise = torch.randn(
+            num_samples, 3, img_size, img_size,
+            device=self.device, dtype=self.dtype
+        )
+
+        # Class labels
+        if class_labels is None:
+            class_labels = torch.randint(
+                0, 1000, (num_samples,), device=self.device
+            )
+
+        # Timestep schedule (adaptive cosine)
+        t_min, t_max = 0.002, 0.998
+        t = torch.linspace(0, 1, num_steps + 1, device=self.device)
+        timesteps = t_min + (t_max - t_min) * (1 - torch.cos(t * math.pi / 2))
+
+        x = noise
+
+        for i in range(num_steps):
+            t_cur = timesteps[i]
+            t_next = timesteps[i + 1]
+            dt = t_next - t_cur
+
+            t_batch = t_cur.expand(num_samples)
+
+            # Model prediction (x_0 prediction)
+            pred = self.model(x, t_batch, class_labels)
+
+            # Compute velocity
+            v = (pred - x) / (1 - t_cur).clamp_min(0.002)
+
+            # Euler step
+            x = x + v * dt
+
+        return x, class_labels
+
+    @torch.no_grad()
+    def reconstruct_batch(
+        self,
+        batch: Tuple[torch.Tensor, torch.Tensor, Dict],
+        t_values: List[float] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Reconstruct images at different noise levels.
+
+        Shows model's ability to denoise at various timesteps.
+
+        Args:
+            batch: (x, y, metadata) tuple
+            t_values: Timesteps to visualize
+
+        Returns:
+            Dict with 'original', 'noisy_t', 'reconstructed_t' for each t
+        """
+        if t_values is None:
+            t_values = [0.2, 0.5, 0.8]
+
+        x, y, metadata = batch
+        x = x.to(self.device, dtype=self.dtype)
+        y = y.to(self.device)
+
+        results = {'original': x.clone()}
+
+        for t_val in t_values:
+            # Create noisy version
+            t = torch.full((x.shape[0],), t_val, device=self.device)
+            noise = torch.randn_like(x)
+
+            # Flow matching interpolation: x_t = t*x_0 + (1-t)*noise
+            x_noisy = t_val * x + (1 - t_val) * noise
+
+            # Model prediction
+            x_pred = self.model(x_noisy, t, y)
+
+            results[f'noisy_{t_val}'] = x_noisy.clone()
+            results[f'reconstructed_{t_val}'] = x_pred.clone()
+
+        return results
+
+    def _log_sample_images(self, generation: int):
+        """Log sample images to wandb."""
+        try:
+            import wandb
+        except ImportError:
+            return
+
+        if self.wandb_run is None:
+            return
+
+        print(f"  [Logging images to wandb...]")
+
+        # 1. Generate fresh samples
+        generated, labels = self.generate_samples(
+            num_samples=self.config.num_sample_images,
+            num_steps=self.config.sample_steps,
+            seed=self.config.fixed_noise_seed,
+        )
+
+        # 2. Get a batch for reconstruction
+        batch = self._get_batch()
+        reconstructions = self.reconstruct_batch(batch, t_values=[0.3, 0.6, 0.9])
+
+        # Convert to displayable format [0, 1]
+        def to_display(img):
+            # Clamp and normalize from [-1, 1] to [0, 1]
+            img = img.float().clamp(-1, 1)
+            return (img + 1) / 2
+
+        # Create image grids
+        images_to_log = {}
+
+        # Generated images
+        gen_images = to_display(generated)
+        images_to_log['generated'] = [
+            wandb.Image(
+                gen_images[i].permute(1, 2, 0).cpu().numpy(),
+                caption=f"Class {labels[i].item()}"
+            )
+            for i in range(min(4, gen_images.shape[0]))
+        ]
+
+        # Reconstruction comparison
+        original = to_display(reconstructions['original'])
+
+        # Create comparison grid for t=0.6
+        if 'noisy_0.6' in reconstructions:
+            noisy = to_display(reconstructions['noisy_0.6'])
+            recon = to_display(reconstructions['reconstructed_0.6'])
+
+            comparison_images = []
+            for i in range(min(4, original.shape[0])):
+                comparison_images.append(
+                    wandb.Image(
+                        original[i].permute(1, 2, 0).cpu().numpy(),
+                        caption="Original"
+                    )
+                )
+                comparison_images.append(
+                    wandb.Image(
+                        noisy[i].permute(1, 2, 0).cpu().numpy(),
+                        caption="Noisy (t=0.6)"
+                    )
+                )
+                comparison_images.append(
+                    wandb.Image(
+                        recon[i].permute(1, 2, 0).cpu().numpy(),
+                        caption="Reconstructed"
+                    )
+                )
+
+            images_to_log['reconstruction'] = comparison_images
+
+        # Log all images
+        self.wandb_run.log({
+            'images/generated': images_to_log.get('generated', []),
+            'images/reconstruction': images_to_log.get('reconstruction', []),
+            'generation': generation,
+        }, step=generation)
+
+        # Also save locally
+        self._save_sample_images(generation, generated, labels, reconstructions)
+
+    def _save_sample_images(
+        self,
+        generation: int,
+        generated: torch.Tensor,
+        labels: torch.Tensor,
+        reconstructions: Dict[str, torch.Tensor],
+    ):
+        """Save sample images locally."""
+        import torchvision.utils as vutils
+
+        images_dir = self.output_dir / "images"
+        images_dir.mkdir(exist_ok=True)
+
+        def to_display(img):
+            img = img.float().clamp(-1, 1)
+            return (img + 1) / 2
+
+        # Save generated images grid
+        gen_grid = vutils.make_grid(to_display(generated), nrow=2, padding=2)
+        vutils.save_image(gen_grid, images_dir / f"gen_{generation:05d}_generated.png")
+
+        # Save reconstruction comparison
+        if 'original' in reconstructions and 'reconstructed_0.6' in reconstructions:
+            orig = to_display(reconstructions['original'][:4])
+            recon = to_display(reconstructions['reconstructed_0.6'][:4])
+
+            # Interleave original and reconstructed
+            comparison = torch.stack([orig, recon], dim=1).view(-1, *orig.shape[1:])
+            comp_grid = vutils.make_grid(comparison, nrow=4, padding=2)
+            vutils.save_image(comp_grid, images_dir / f"gen_{generation:05d}_reconstruction.png")

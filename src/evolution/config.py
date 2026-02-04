@@ -168,6 +168,12 @@ class EvolutionConfig:
     checkpoint_every: int = 50            # Save checkpoint every N generations
     log_every: int = 10                   # Log metrics every N generations
 
+    # Image logging (wandb)
+    log_images_every: int = 50            # Log sample images every N generations
+    num_sample_images: int = 4            # Number of images to generate
+    sample_steps: int = 25                # Denoising steps for visualization
+    fixed_noise_seed: int = 1234          # Seed for consistent visualization
+
     # Early stopping
     patience: int = 100                   # Generations without improvement
     min_improvement: float = 1e-4         # Minimum fitness delta

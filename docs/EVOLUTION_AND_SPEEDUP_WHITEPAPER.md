@@ -2,7 +2,7 @@
 
 ## A Technical Report on Gradient-Free Optimization and Inference Acceleration
 
-**Version 1.0 | February 2026**
+**Version 1.1 | February 2026**
 
 ---
 
@@ -300,6 +300,69 @@ pred2 = model(x_euler, t + dt)
 v2 = (pred2 - x_euler) / (1 - (t + dt))
 
 x_next = x + (v1 + v2) * dt / 2  # Average velocities
+```
+
+### 4.6 Stochastic Sampling
+
+Flow matching uses deterministic ODE sampling by default. We provide multiple strategies to reintroduce stochasticity for diverse outputs:
+
+| Strategy | Description | Diversity Level |
+|----------|-------------|-----------------|
+| `temperature` | Scale initial noise | Low |
+| `churn` | EDM-style add/remove noise | Medium (recommended) |
+| `sde` | Langevin dynamics (√dt noise) | High |
+| `ancestral` | DDPM-style posterior sampling | Variable |
+
+```python
+from src.speedup import StochasticSampler
+
+# Strategy-based stochastic sampling
+sampler = StochasticSampler(
+    num_steps=25,
+    strategy='churn',    # 'sde', 'churn', 'ancestral', 'temperature'
+    noise_scale=1.0,
+    temperature=1.0,
+)
+
+# Same noise, different outputs!
+img1 = sampler.sample(model, noise, labels)
+img2 = sampler.sample(model, noise, labels)  # Different from img1
+```
+
+**Stochastic Churn (EDM-style):**
+```python
+# At each step, add then denoise noise:
+gamma = 0.5  # Churn amount
+sigma_hat = sigma * (1 + gamma)
+noise_add = sqrt(sigma_hat² - sigma²)
+x = x + randn() * noise_add
+```
+
+### 4.7 Training Visualization with W&B
+
+Evolution training includes integrated Weights & Biases logging for monitoring:
+
+**Logged Metrics:**
+- Fitness scores (total, FM, LPIPS, DINO, SSIM)
+- Vote distributions (+/-/=)
+- Noise scale decay
+- Parameter update counts
+
+**Logged Images:**
+- Generated samples (fixed seed for consistency)
+- Reconstruction comparisons (original → noisy → reconstructed)
+- Saved locally and to W&B
+
+```python
+# Enable wandb logging
+python train_evo.py --config configs_evo/PixelGen_XL_evo.yaml \
+    --wandb --wandb-project pixelgen-evo
+
+# Images logged every 50 generations by default
+# Configure in EvolutionConfig:
+#   log_images_every: 50
+#   num_sample_images: 4
+#   sample_steps: 25
 ```
 
 ---

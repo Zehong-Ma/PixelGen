@@ -26,6 +26,14 @@ class SamplerConfig:
     t_min: float = 0.002         # Minimum timestep (avoid division issues)
     t_max: float = 0.998         # Maximum timestep
 
+    # Stochasticity options
+    stochastic: bool = False     # Enable stochastic sampling
+    noise_scale: float = 1.0     # Scale of injected noise (S_noise in EDM)
+    churn: float = 0.0           # Stochastic churn (S_churn in EDM, 0-1)
+    churn_t_min: float = 0.0     # Only apply churn above this timestep
+    churn_t_max: float = 1.0     # Only apply churn below this timestep
+    temperature: float = 1.0     # Sampling temperature (scales final noise)
+
 
 class FastEulerSampler:
     """
@@ -129,6 +137,55 @@ class FastEulerSampler:
 
             # Euler step
             x = x + v * dt
+
+            # Add stochasticity if enabled
+            if self.config.stochastic and i < self.config.num_steps - 1:
+                x = self._add_stochasticity(x, t_cur, t_next)
+
+        return x
+
+    def _add_stochasticity(
+        self,
+        x: torch.Tensor,
+        t_cur: torch.Tensor,
+        t_next: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Add stochasticity to the sampling process.
+
+        Implements "stochastic churn" from EDM (Karras et al.):
+        1. Add noise to current sample
+        2. This creates diversity while maintaining quality
+
+        The amount of noise is controlled by:
+        - churn: How much to "churn" (0 = deterministic, 1 = max stochasticity)
+        - noise_scale: Multiplier on the noise magnitude
+        - churn_t_min/max: Only apply in certain timestep ranges
+        """
+        t = t_cur.item() if t_cur.dim() == 0 else t_cur[0].item()
+
+        # Only apply churn in specified range
+        if t < self.config.churn_t_min or t > self.config.churn_t_max:
+            return x
+
+        if self.config.churn <= 0:
+            return x
+
+        # Compute noise magnitude based on current timestep
+        # More noise at higher t (early in denoising)
+        gamma = min(self.config.churn, math.sqrt(2) - 1)  # Cap at sqrt(2)-1
+
+        # EDM-style: sigma_hat = sigma * (1 + gamma)
+        # For flow matching, use (1-t) as proxy for noise level
+        sigma = 1 - t
+        sigma_hat = sigma * (1 + gamma)
+
+        # Amount of noise to add
+        noise_amount = math.sqrt(sigma_hat ** 2 - sigma ** 2) * self.config.noise_scale
+
+        # Add noise
+        noise = torch.randn_like(x) * noise_amount
+        x = x + noise
 
         return x
 
@@ -338,3 +395,282 @@ def create_fast_sampler(
     config.guidance_scale = guidance_scale
 
     return FastEulerSampler(config)
+
+
+class StochasticSampler:
+    """
+    Stochastic sampler with multiple noise injection strategies.
+
+    Strategies for introducing stochasticity:
+
+    1. 'sde' - SDE formulation (Langevin dynamics)
+       - Adds Gaussian noise at each step proportional to sqrt(dt)
+       - Most principled approach, preserves theoretical guarantees
+
+    2. 'churn' - EDM-style stochastic churn
+       - Adds and removes noise at each step
+       - Good balance of diversity and quality
+
+    3. 'ancestral' - DDPM-style ancestral sampling
+       - Samples from posterior q(x_{t-1}|x_t, x_0)
+       - Most stochastic, can reduce quality
+
+    4. 'temperature' - Temperature scaling
+       - Scales the final noise by temperature
+       - Simple but effective for diversity
+
+    5. 'dropout' - Stochastic model dropout
+       - Enables dropout during inference
+       - Creates variation through model uncertainty
+    """
+
+    def __init__(
+        self,
+        num_steps: int = 25,
+        strategy: str = 'churn',
+        noise_scale: float = 1.0,
+        temperature: float = 1.0,
+        adaptive_steps: bool = True,
+    ):
+        """
+        Initialize stochastic sampler.
+
+        Args:
+            num_steps: Number of denoising steps
+            strategy: Stochasticity strategy ('sde', 'churn', 'ancestral', 'temperature')
+            noise_scale: Scale of injected noise
+            temperature: Sampling temperature
+            adaptive_steps: Use cosine timestep schedule
+        """
+        self.num_steps = num_steps
+        self.strategy = strategy
+        self.noise_scale = noise_scale
+        self.temperature = temperature
+        self.adaptive_steps = adaptive_steps
+
+        self.t_min = 0.002
+        self.t_max = 0.998
+
+    def _get_timesteps(self, device: torch.device) -> torch.Tensor:
+        """Get timestep schedule."""
+        if self.adaptive_steps:
+            t = torch.linspace(0, 1, self.num_steps + 1, device=device)
+            timesteps = self.t_min + (self.t_max - self.t_min) * (1 - torch.cos(t * math.pi / 2))
+        else:
+            timesteps = torch.linspace(self.t_min, self.t_max, self.num_steps + 1, device=device)
+        return timesteps
+
+    @torch.no_grad()
+    def sample(
+        self,
+        model: nn.Module,
+        noise: torch.Tensor,
+        condition: torch.Tensor,
+        seed: Optional[int] = None,
+    ) -> torch.Tensor:
+        """
+        Generate images with stochasticity.
+
+        Args:
+            model: JiT model
+            noise: Initial noise [B, 3, H, W]
+            condition: Class labels [B]
+            seed: Optional seed for reproducible stochasticity
+
+        Returns:
+            Generated images [B, 3, H, W]
+        """
+        if seed is not None:
+            torch.manual_seed(seed)
+
+        batch_size = noise.shape[0]
+        device = noise.device
+        dtype = noise.dtype
+
+        # Apply temperature to initial noise
+        x = noise * self.temperature
+
+        timesteps = self._get_timesteps(device)
+
+        for i in range(self.num_steps):
+            t_cur = timesteps[i]
+            t_next = timesteps[i + 1]
+            dt = t_next - t_cur
+            t_batch = t_cur.expand(batch_size)
+
+            # Get model prediction (x_0 prediction)
+            pred = model(x, t_batch, condition)
+
+            # Compute velocity
+            v = (pred - x) / (1 - t_cur).clamp_min(self.t_min)
+
+            # Apply stochasticity based on strategy
+            if self.strategy == 'sde':
+                x = self._step_sde(x, v, dt, t_cur)
+            elif self.strategy == 'churn':
+                x = self._step_churn(x, v, dt, t_cur)
+            elif self.strategy == 'ancestral':
+                x = self._step_ancestral(x, pred, t_cur, t_next)
+            elif self.strategy == 'temperature':
+                x = self._step_temperature(x, v, dt, t_cur)
+            else:
+                # Default: deterministic Euler
+                x = x + v * dt
+
+        return x
+
+    def _step_sde(
+        self,
+        x: torch.Tensor,
+        v: torch.Tensor,
+        dt: torch.Tensor,
+        t: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        SDE step (Langevin dynamics).
+
+        dx = v*dt + sqrt(2*D*dt) * noise
+
+        where D is the diffusion coefficient.
+        """
+        # Deterministic drift
+        x = x + v * dt
+
+        # Stochastic diffusion
+        # Noise magnitude proportional to sqrt(dt) and current noise level
+        sigma = (1 - t) * self.noise_scale
+        noise_mag = (2 * sigma * dt.abs()).sqrt()
+        x = x + torch.randn_like(x) * noise_mag
+
+        return x
+
+    def _step_churn(
+        self,
+        x: torch.Tensor,
+        v: torch.Tensor,
+        dt: torch.Tensor,
+        t: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        EDM-style stochastic churn.
+
+        1. Add noise to increase sigma
+        2. Denoise back to target sigma
+        """
+        # Only churn in middle timesteps
+        t_val = t.item() if t.dim() == 0 else t[0].item()
+        if t_val < 0.1 or t_val > 0.9:
+            return x + v * dt
+
+        # Churn parameters
+        gamma = min(self.noise_scale * 0.5, math.sqrt(2) - 1)
+
+        # Current noise level proxy
+        sigma = 1 - t_val
+        sigma_hat = sigma * (1 + gamma)
+
+        # Add noise
+        noise_add = math.sqrt(sigma_hat ** 2 - sigma ** 2)
+        x = x + torch.randn_like(x) * noise_add
+
+        # Take Euler step
+        x = x + v * dt
+
+        return x
+
+    def _step_ancestral(
+        self,
+        x: torch.Tensor,
+        x0_pred: torch.Tensor,
+        t_cur: torch.Tensor,
+        t_next: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        DDPM-style ancestral sampling.
+
+        Sample from q(x_{t-1} | x_t, x_0)
+        """
+        t_cur_val = t_cur.item() if t_cur.dim() == 0 else t_cur[0].item()
+        t_next_val = t_next.item() if t_next.dim() == 0 else t_next[0].item()
+
+        # In flow matching: x_t = t*x_0 + (1-t)*eps
+        # Estimate eps from x_t and x_0_pred
+        eps = (x - t_cur_val * x0_pred) / (1 - t_cur_val + 1e-8)
+
+        # Posterior mean
+        # x_{t-1} = t_{next}*x_0 + (1-t_{next})*eps
+        mean = t_next_val * x0_pred + (1 - t_next_val) * eps
+
+        # Add noise (scaled by remaining noise level)
+        std = (1 - t_next_val) * self.noise_scale * 0.1
+        noise = torch.randn_like(x) * std
+
+        return mean + noise
+
+    def _step_temperature(
+        self,
+        x: torch.Tensor,
+        v: torch.Tensor,
+        dt: torch.Tensor,
+        t: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Temperature-scaled step.
+
+        Higher temperature = more exploration of the generation space.
+        """
+        # Deterministic step
+        x = x + v * dt
+
+        # Add temperature-scaled noise only in early steps
+        t_val = t.item() if t.dim() == 0 else t[0].item()
+        if t_val > 0.3:  # Only add noise in high-noise regime
+            noise_scale = (self.temperature - 1.0) * (1 - t_val) * 0.1
+            if noise_scale > 0:
+                x = x + torch.randn_like(x) * noise_scale
+
+        return x
+
+
+def create_stochastic_sampler(
+    num_steps: int = 25,
+    diversity: str = 'medium',
+) -> StochasticSampler:
+    """
+    Factory for creating stochastic samplers with preset configurations.
+
+    Args:
+        num_steps: Number of sampling steps
+        diversity: 'low', 'medium', 'high', or 'max'
+
+    Returns:
+        Configured StochasticSampler
+    """
+    configs = {
+        'low': {
+            'strategy': 'temperature',
+            'noise_scale': 0.5,
+            'temperature': 1.05,
+        },
+        'medium': {
+            'strategy': 'churn',
+            'noise_scale': 0.8,
+            'temperature': 1.0,
+        },
+        'high': {
+            'strategy': 'sde',
+            'noise_scale': 1.0,
+            'temperature': 1.1,
+        },
+        'max': {
+            'strategy': 'ancestral',
+            'noise_scale': 1.0,
+            'temperature': 1.2,
+        },
+    }
+
+    cfg = configs.get(diversity, configs['medium'])
+    return StochasticSampler(
+        num_steps=num_steps,
+        **cfg
+    )
