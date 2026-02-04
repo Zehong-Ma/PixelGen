@@ -138,7 +138,10 @@ class VisionRotaryEmbeddingFast(nn.Module):
         if self.freqs_cos.device != t.device:
             self.freqs_cos = self.freqs_cos.to(t.device)
             self.freqs_sin = self.freqs_sin.to(t.device)
-        return  t * self.freqs_cos + rotate_half(t) * self.freqs_sin
+        # Cast to input dtype for mixed precision support
+        freqs_cos = self.freqs_cos.to(dtype=t.dtype)
+        freqs_sin = self.freqs_sin.to(dtype=t.dtype)
+        return t * freqs_cos + rotate_half(t) * freqs_sin
 
 
 class RMSNorm(nn.Module):
@@ -290,6 +293,8 @@ class TimestepEmbedder(nn.Module):
 
     def forward(self, t):
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
+        # Cast to model dtype for mixed precision support
+        t_freq = t_freq.to(dtype=self.mlp[0].weight.dtype)
         t_emb = self.mlp(t_freq)
         return t_emb
 
