@@ -379,28 +379,31 @@ class MultiTimestepFitness(PixelGenFitness):
         self.num_timesteps = num_timesteps
         self.timestep_distribution = timestep_distribution
 
-    def _sample_timesteps(self, batch_size: int, device: torch.device) -> List[torch.Tensor]:
+    def _sample_timesteps(self, batch_size: int, device: torch.device, dtype: torch.dtype = None) -> List[torch.Tensor]:
         """Sample multiple timesteps for evaluation."""
         timesteps = []
+        # Use the evaluator's dtype for consistency
+        if dtype is None:
+            dtype = self.dtype
 
         if self.timestep_distribution == 'stratified':
             # Stratified sampling across t range
             for i in range(self.num_timesteps):
                 t_low = i / self.num_timesteps
                 t_high = (i + 1) / self.num_timesteps
-                t = torch.rand(batch_size, device=device) * (t_high - t_low) + t_low
+                t = torch.rand(batch_size, device=device, dtype=dtype) * (t_high - t_low) + t_low
                 timesteps.append(t)
 
         elif self.timestep_distribution == 'uniform':
             for _ in range(self.num_timesteps):
-                t = torch.rand(batch_size, device=device)
+                t = torch.rand(batch_size, device=device, dtype=dtype)
                 timesteps.append(t)
 
         elif self.timestep_distribution == 'lognormal':
             P_mean = getattr(self.config, 't_P_mean', -0.8)
             P_std = getattr(self.config, 't_P_std', 0.8)
             for _ in range(self.num_timesteps):
-                t = (torch.randn(batch_size, device=device) * P_std + P_mean).sigmoid()
+                t = (torch.randn(batch_size, device=device, dtype=dtype) * P_std + P_mean).sigmoid()
                 timesteps.append(t)
 
         return timesteps
@@ -423,9 +426,10 @@ class MultiTimestepFitness(PixelGenFitness):
 
         batch_size = x.shape[0]
         device = x.device
+        dtype = x.dtype  # Use input dtype for timesteps
 
         # Sample multiple timesteps
-        timesteps = self._sample_timesteps(batch_size, device)
+        timesteps = self._sample_timesteps(batch_size, device, dtype)
 
         # Accumulate results
         results = []

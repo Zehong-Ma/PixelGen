@@ -1,0 +1,124 @@
+# PixelGen Evolutionary Training - CelebA - Optimized for RTX PRO 6000 96GB
+#
+# MAXIMUM THROUGHPUT config for cloud training on Vast.ai RTX 6000 (96GB VRAM)
+# This config pushes batch sizes to the limit for fastest convergence.
+
+# ============================================================================
+# MODEL CONFIGURATION
+# ============================================================================
+model:
+  denoiser:
+    model_name: "JiT-L/16"
+    input_size: 256
+    patch_size: 16
+    hidden_size: 1024
+    depth: 24
+    num_heads: 16
+    mlp_ratio: 4.0
+    num_classes: 1             # Unconditional (single "face" class)
+    in_context_len: 32
+    in_context_start: 8
+    bottleneck_dim: 128
+    use_bottleneck: true
+
+  scheduler:
+    type: "linear"
+
+# ============================================================================
+# DATA CONFIGURATION - CelebA
+# ============================================================================
+data:
+  dataset_type: "folder"
+  train_data_dir: "/workspace/data/celeba/img_align_celeba"  # Vast.ai path
+  train_batch_size: 384       # MASSIVE batch - 96GB allows ~5x more than 24GB
+  train_num_workers: 16       # More workers for faster loading
+  img_size: 256
+  center_crop: true
+
+# ============================================================================
+# EVOLUTION CONFIGURATION - MAXIMIZED FOR RTX PRO 6000 96GB
+# ============================================================================
+evolution:
+  # Population settings - VERY LARGE for stable gradients
+  population_size: 128         # Maximum population for precise fitness estimates
+  num_generations: 5000        # Long training for convergence
+
+  # Noise schedule
+  noise_scale: 0.006           # Lower noise for fine-grained face details
+  noise_decay: 0.999           # Very slow decay
+  noise_min: 0.000005
+
+  # Voting mechanism
+  vote_threshold: 16           # High threshold for large population
+  update_scale: 0.0004         # Small updates for stability
+
+  # Evaluation settings - MAXIMIZED FOR 96GB
+  eval_batch_size: 384         # ~64GB VRAM (32GB headroom)
+  num_eval_batches: 2          # 768 samples per fitness evaluation!
+
+  # Memory optimization
+  sequential_eval: true
+  empty_cache_freq: 20
+
+  # Logging
+  checkpoint_every: 100
+  log_every: 20
+  log_images_every: 50
+  num_sample_images: 16        # More samples with more VRAM
+  sample_steps: 30
+
+  # Early stopping
+  patience: 500
+  min_improvement: 0.00002
+
+  # Fitness function - TUNED FOR FACES
+  fitness:
+    w_flow_matching: 0.30
+    w_lpips: 0.35
+    w_dino: 0.25
+    w_ssim: 0.10
+    percept_t_threshold: 0.25
+    dino_layers: [9, 11]
+    dino_base_patch_size: 16
+    lpips_net: "vgg"
+
+# ============================================================================
+# SELECTIVE LAYER EVOLUTION
+# ============================================================================
+layer_selection:
+  evolve_final_layer: true
+  evolve_in_context_tokens: true
+  evolve_late_attention: true
+  evolve_adaln_modulation: true
+  evolve_mlp: true             # CAN enable MLP with 96GB!
+  evolve_embedders: false
+  evolve_patch_embed: false
+  num_late_layers: 8           # More layers with more VRAM
+  evolve_qkv: true
+  evolve_proj: true
+
+# ============================================================================
+# HARDWARE - RTX PRO 6000 96GB
+# ============================================================================
+hardware:
+  device: "cuda"
+  dtype: "bfloat16"
+  seed: 42
+  empty_cache_freq: 20
+  pin_memory: true
+  prefetch_factor: 4
+
+# ============================================================================
+# ESTIMATED THROUGHPUT (RTX PRO 6000 96GB)
+# ============================================================================
+# Memory per batch:
+#   - Batch 384 @ 256x256: ~64 GB (estimated from 96 batch → 16GB scaling)
+#
+# Throughput per generation:
+#   - 128 candidates × 2 batches × 384 images = 98,304 images
+#   - ~4x faster convergence than RTX 4000 config
+#
+# Cost estimate (Vast.ai):
+#   - $0.74/hr for RTX PRO 6000 S
+#   - ~$15-30 for 1000 generations
+# ============================================================================

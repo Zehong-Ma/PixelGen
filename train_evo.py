@@ -134,6 +134,77 @@ class SyntheticImageDataset(torch.utils.data.Dataset):
         return normalized_image, target, metadata
 
 
+class FolderImageDataset(torch.utils.data.Dataset):
+    """Simple folder dataset for images (like CelebA)."""
+
+    def __init__(
+        self,
+        root: str,
+        resolution: int = 256,
+        num_classes: int = 1,
+        center_crop: bool = True,
+        random_flip: bool = True,
+    ):
+        from PIL import Image
+        import torchvision.transforms as transforms
+
+        self.root = Path(root)
+        self.resolution = resolution
+        self.num_classes = num_classes
+        self.center_crop = center_crop
+
+        # Find all images
+        self.images = []
+        for ext in ['*.jpg', '*.jpeg', '*.png', '*.webp']:
+            self.images.extend(list(self.root.glob(ext)))
+            self.images.extend(list(self.root.glob(ext.upper())))
+
+        self.images = sorted(self.images)
+        print(f"[FolderImageDataset] Found {len(self.images)} images in {root}")
+
+        # Build transforms
+        transform_list = []
+        if center_crop:
+            # For CelebA: crop to square first
+            transform_list.append(transforms.CenterCrop(min(178, 218)))  # CelebA specific
+        transform_list.extend([
+            transforms.Resize(resolution, interpolation=transforms.InterpolationMode.LANCZOS),
+            transforms.CenterCrop(resolution),  # Ensure exact size
+        ])
+        if random_flip:
+            transform_list.append(transforms.RandomHorizontalFlip())
+        transform_list.extend([
+            transforms.ToTensor(),  # [0, 1]
+        ])
+
+        self.transform = transforms.Compose(transform_list)
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        from PIL import Image
+
+        img_path = self.images[idx]
+        img = Image.open(img_path).convert('RGB')
+
+        # Apply transforms
+        raw_image = self.transform(img)  # [0, 1]
+
+        # Normalize to [-1, 1]
+        normalized_image = raw_image * 2 - 1
+
+        # For unconditional, use class 0
+        target = 0
+
+        metadata = {
+            "raw_image": raw_image,
+            "class": target,
+            "path": str(img_path),
+        }
+        return normalized_image, target, metadata
+
+
 def collate_fn(batch):
     """Collate function for PixelGen data format."""
     import copy
@@ -159,23 +230,42 @@ def create_dataloader(config: dict, batch_size: int, use_synthetic: bool = False
 
     data_config = config.get('data', {})
     data_dir = data_config.get('train_data_dir', '/data/imagenet/train')
+    dataset_type = data_config.get('dataset_type', 'imagenet')
+    img_size = data_config.get('img_size', 256)
+    num_classes = config.get('model', {}).get('denoiser', {}).get('num_classes', 1000)
 
     # Check if data exists
     if use_synthetic or not os.path.exists(data_dir):
         print(f"[INFO] Using synthetic dataset (data dir not found: {data_dir})")
         dataset = SyntheticImageDataset(
-            size=1000,
-            resolution=data_config.get('img_size', 256),
-            num_classes=1000,
+            size=10000,
+            resolution=img_size,
+            num_classes=num_classes,
+        )
+    elif dataset_type == 'folder':
+        # Simple folder of images (CelebA, custom datasets)
+        print(f"[INFO] Using folder dataset: {data_dir}")
+        dataset = FolderImageDataset(
+            root=data_dir,
+            resolution=img_size,
+            num_classes=num_classes,
+            center_crop=data_config.get('center_crop', True),
+            random_flip=True,
         )
     else:
+        # Default: ImageNet format
         from src.data.dataset.imagenet import PixImageNet
         dataset = PixImageNet(
             root=data_dir,
-            resolution=data_config.get('img_size', 256),
+            resolution=img_size,
             random_crop=False,
             random_flip=True,
         )
+
+    # Hardware config
+    hw_config = config.get('hardware', {})
+    pin_memory = hw_config.get('pin_memory', True)
+    prefetch_factor = hw_config.get('prefetch_factor', 2)
 
     # Create dataloader (no distributed sampler for evolution)
     dataloader = DataLoader(
@@ -184,9 +274,14 @@ def create_dataloader(config: dict, batch_size: int, use_synthetic: bool = False
         shuffle=True,
         num_workers=data_config.get('train_num_workers', 4),
         collate_fn=collate_fn,
-        pin_memory=True,
+        pin_memory=pin_memory,
         drop_last=True,
+        prefetch_factor=prefetch_factor if data_config.get('train_num_workers', 4) > 0 else None,
+        persistent_workers=data_config.get('train_num_workers', 4) > 0,
     )
+
+    print(f"[DataLoader] batch_size={batch_size}, num_workers={data_config.get('train_num_workers', 4)}, "
+          f"dataset_size={len(dataset)}")
 
     return dataloader  # Return DataLoader, not iterator
 
@@ -349,6 +444,9 @@ def main():
         batch_size = 2
         print("\n[QUICK TEST MODE]")
 
+    # Hardware config for memory optimizations
+    hw_config = config.get('hardware', {})
+
     evo_config = EvolutionConfig(
         population_size=population_size,
         num_generations=num_generations,
@@ -360,7 +458,12 @@ def main():
         num_eval_batches=evo_config_dict.get('num_eval_batches', 1),
         checkpoint_every=evo_config_dict.get('checkpoint_every', 50),
         log_every=evo_config_dict.get('log_every', 10),
+        log_images_every=evo_config_dict.get('log_images_every', 50),
+        num_sample_images=evo_config_dict.get('num_sample_images', 4),
+        sample_steps=evo_config_dict.get('sample_steps', 25),
         patience=evo_config_dict.get('patience', 100),
+        sequential_eval=evo_config_dict.get('sequential_eval', True),
+        empty_cache_freq=hw_config.get('empty_cache_freq', 10),
         device=device,
         dtype=dtype,
         layer_config=evolvable.config,

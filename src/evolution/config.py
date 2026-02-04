@@ -178,6 +178,10 @@ class EvolutionConfig:
     patience: int = 100                   # Generations without improvement
     min_improvement: float = 1e-4         # Minimum fitness delta
 
+    # Memory optimization
+    sequential_eval: bool = True          # Evaluate one candidate at a time (saves VRAM)
+    empty_cache_freq: int = 10            # Clear CUDA cache every N evaluations (0=disabled)
+
     # Device and precision
     device: str = 'cuda'
     dtype: torch.dtype = torch.bfloat16

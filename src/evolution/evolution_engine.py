@@ -268,6 +268,7 @@ class PixelGenEvolution:
         ties = 0
 
         # Evaluate each antithetic pair
+        eval_count = 0
         for seed in seeds:
             # Positive perturbation
             pert_pos = HashPerturbation(
@@ -276,6 +277,12 @@ class PixelGenEvolution:
                 direction=+1,
             )
             fitness_pos = self._evaluate_candidate(pert_pos)
+            eval_count += 1
+
+            # Memory optimization: clear cache periodically
+            if self.config.empty_cache_freq > 0 and eval_count % self.config.empty_cache_freq == 0:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             # Negative perturbation
             pert_neg = HashPerturbation(
@@ -284,6 +291,12 @@ class PixelGenEvolution:
                 direction=-1,
             )
             fitness_neg = self._evaluate_candidate(pert_neg)
+            eval_count += 1
+
+            # Memory optimization: clear cache periodically
+            if self.config.empty_cache_freq > 0 and eval_count % self.config.empty_cache_freq == 0:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             # Vote
             vote = self.fitness_evaluator.compare_pair(fitness_pos, fitness_neg)
@@ -531,9 +544,15 @@ class PixelGenEvolution:
 
         # Class labels
         if class_labels is None:
-            class_labels = torch.randint(
-                0, 1000, (num_samples,), device=self.device
-            )
+            # Check if model has num_classes attribute
+            num_classes = getattr(self.model, 'num_classes', 1000)
+            if num_classes <= 1:
+                # Unconditional: all zeros
+                class_labels = torch.zeros(num_samples, device=self.device, dtype=torch.long)
+            else:
+                class_labels = torch.randint(
+                    0, num_classes, (num_samples,), device=self.device
+                )
 
         # Timestep schedule (adaptive cosine)
         t_min, t_max = 0.002, 0.998
