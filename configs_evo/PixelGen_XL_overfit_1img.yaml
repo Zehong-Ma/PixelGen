@@ -31,7 +31,7 @@ data:
   dataset_type: "overfit"     # Special mode: repeat single image
   train_data_dir: "/home/johndpope/Documents/GitHub/hrr-titans/data/celeba/img_align_celeba"
   num_images: 1               # Only use 1 image
-  train_batch_size: 4         # Small batch, same image repeated
+  train_batch_size: 2         # Reduced for limited GPU memory
   train_num_workers: 0        # No workers needed for 1 image
   img_size: 256
   center_crop: true
@@ -50,10 +50,10 @@ evolution:
 
   # CRITICAL: threshold must be 1 since each seed gets only 1 vote!
   vote_threshold: 1           # Each seed votes -1, 0, or +1
-  update_scale: 0.005         # Larger updates for faster convergence
+  update_scale: 0.0001        # Small learning rate with proper ES gradient
 
-  # Small batches for overfitting
-  eval_batch_size: 4
+  # Small batches for overfitting (reduced for limited GPU memory)
+  eval_batch_size: 2
   num_eval_batches: 1
 
   # Frequent logging to watch progress

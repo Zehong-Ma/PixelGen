@@ -39,19 +39,19 @@ data:
 # EVOLUTION CONFIGURATION - MAXIMIZED FOR RTX 4000 24GB
 # ============================================================================
 evolution:
-  # Population settings - LARGE for stable gradients
-  population_size: 64          # Large population = more stable fitness estimates
+  # Population settings - INCREASED for better sampling in high-dim space
+  population_size: 128         # Larger population = more stable fitness estimates (was 64)
   num_generations: 2000        # More generations for convergence
 
-  # Noise schedule
-  noise_scale: 0.008           # Slightly lower for faces (more delicate features)
+  # Noise schedule - INCREASED for stronger signal
+  noise_scale: 0.01            # Increased for detectable fitness differences (was 0.008)
   noise_decay: 0.998           # Slower decay
   noise_min: 0.00001
 
   # Voting mechanism
   # NOTE: Each seed gets only 1 vote (-1, 0, or +1), so threshold must be 1
   vote_threshold: 1
-  update_scale: 0.001          # Weight update magnitude
+  update_scale: 0.005          # Weight update magnitude - 5x increase for faster learning (was 0.001)
 
   # Evaluation settings - MAXIMIZED FOR 24GB
   eval_batch_size: 96          # Uses ~16GB VRAM (8GB headroom)

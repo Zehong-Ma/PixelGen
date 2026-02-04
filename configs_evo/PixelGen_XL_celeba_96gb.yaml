@@ -43,15 +43,15 @@ evolution:
   population_size: 128         # Maximum population for precise fitness estimates
   num_generations: 5000        # Long training for convergence
 
-  # Noise schedule
-  noise_scale: 0.006           # Lower noise for fine-grained face details
+  # Noise schedule - INCREASED for stronger signal
+  noise_scale: 0.01            # Increased for detectable fitness differences (was 0.006)
   noise_decay: 0.999           # Very slow decay
   noise_min: 0.000005
 
   # Voting mechanism
   # NOTE: Each seed gets only 1 vote (-1, 0, or +1), so threshold must be 1
   vote_threshold: 1
-  update_scale: 0.001          # Weight update magnitude
+  update_scale: 0.005          # Weight update magnitude - 5x increase (was 0.001)
 
   # Evaluation settings - MAXIMIZED FOR 96GB
   eval_batch_size: 384         # ~64GB VRAM (32GB headroom)

@@ -189,7 +189,9 @@ class PixelGenFitness:
         v_target = (target_img - x_t) / (1 - t_expanded).clamp_min(t_eps)
 
         fm_loss = ((v_pred - v_target) ** 2).mean()
-        fm_fitness = torch.exp(-fm_loss * self.config.fm_loss_scale)
+        # Use negative loss directly instead of exp() to avoid underflow
+        # Higher (less negative) = better fitness
+        fm_fitness = -fm_loss
 
         # 2. LPIPS Loss → Fitness
         # LPIPS expects float32 and [-1, 1] range
@@ -197,7 +199,8 @@ class PixelGenFitness:
             pred_img.float().clamp(-1, 1),
             target_img.float().clamp(-1, 1)
         ).mean()
-        lpips_fitness = 1.0 - lpips_loss.clamp(0, 1)
+        # Use negative loss for consistency (higher/less negative = better)
+        lpips_fitness = -lpips_loss
 
         # 3. DINO Loss → Fitness (cosine similarity)
         # DINO expects [0, 1] range
@@ -219,12 +222,16 @@ class PixelGenFitness:
         for pf, tf in zip(pred_feats, target_feats):
             cos_sim = F.cosine_similarity(pf, tf, dim=-1).mean()
             dino_sim_total += cos_sim
-        dino_fitness = dino_sim_total / len(pred_feats)
-        dino_loss = 1.0 - dino_fitness
+        dino_sim = dino_sim_total / len(pred_feats)
+        dino_loss = 1.0 - dino_sim
+        # Use negative loss for consistency (higher/less negative = better)
+        dino_fitness = -dino_loss
 
         # 4. SSIM
         ssim_score = ssim(pred_img.float(), target_img.float())
-        ssim_fitness = ssim_score.clamp(0, 1)
+        ssim_loss = 1.0 - ssim_score.clamp(0, 1)
+        # Use negative loss for consistency (higher/less negative = better)
+        ssim_fitness = -ssim_loss
 
         # Apply noise gating: only count perceptual for t >= threshold
         # For low t (high noise), perceptual metrics are unreliable
@@ -343,11 +350,11 @@ class PixelGenFitness:
         """
         diff = fitness_pos.total_fitness - fitness_neg.total_fitness
 
-        # Use small epsilon for tie-breaking
-        eps = 1e-6
-        if diff > eps:
+        # Direct comparison without epsilon to avoid artificial ties
+        # With negative loss fitness, differences are meaningful
+        if diff > 0:
             return +1
-        elif diff < -eps:
+        elif diff < 0:
             return -1
         else:
             return 0

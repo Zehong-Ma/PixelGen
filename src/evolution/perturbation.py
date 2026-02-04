@@ -13,7 +13,7 @@ Key features:
 
 import torch
 import torch.nn as nn
-from typing import Dict, List, Tuple, Optional, Iterator
+from typing import Dict, List, Tuple, Optional, Iterator, Any
 from dataclasses import dataclass
 import time
 
@@ -48,6 +48,7 @@ def noise_from_hash(seed: int, idx: torch.Tensor) -> torch.Tensor:
     Generate normalized noise from hash values.
 
     Converts hash output to floating-point noise in [-1, 1] range.
+    FIXED: Now uses continuous magnitude instead of discrete 32 levels.
 
     Args:
         seed: Base seed for hash
@@ -61,8 +62,9 @@ def noise_from_hash(seed: int, idx: torch.Tensor) -> torch.Tensor:
     sign = torch.where(r & 1 == 1,
                        torch.ones_like(r, dtype=torch.float32),
                        -torch.ones_like(r, dtype=torch.float32))
-    # Use next 5 bits for magnitude [0, 31]
-    magnitude = ((r >> 1) & 31).float() / 31.0
+    # Use full precision for continuous magnitude [0, 1]
+    # This provides smoother exploration than discrete 32 levels
+    magnitude = torch.abs(r.float()) / 2147483647.0
     return sign * magnitude
 
 
@@ -286,53 +288,91 @@ class SelectiveParameterPerturbation:
         seeds: List[int],
         threshold: int,
         update_scale: float,
-        use_gaussian: bool = False
+        noise_scale: float = 0.01,
+        use_gaussian: bool = False,
+        fitness_diffs: Optional[Dict[int, float]] = None,
     ) -> int:
         """
-        Update original weights based on accumulated votes.
+        Update original weights using proper ES gradient estimate.
 
-        For each seed, if votes exceed threshold, update weights
-        in the winning direction.
+        Standard ES update formula:
+            w += learning_rate * Σ (F+ - F-) * ε / (2 * σ)
+
+        Where:
+            - F+ = fitness with positive perturbation
+            - F- = fitness with negative perturbation
+            - ε = noise vector
+            - σ = noise_scale
+
+        This estimates the gradient direction and moves weights to IMPROVE fitness.
 
         Args:
             votes: Dict mapping seed to vote count (+/- indicates direction)
             seeds: List of seeds that were evaluated
             threshold: Minimum |votes| to trigger update
-            update_scale: Magnitude of weight update
+            update_scale: Learning rate for weight update
+            noise_scale: Scale of perturbations (σ) - needed for proper gradient estimate
             use_gaussian: Use Gaussian noise
+            fitness_diffs: Dict mapping seed to (fitness_pos - fitness_neg) difference
 
         Returns:
-            Number of parameters updated
+            Number of contributing seeds
         """
-        updates_applied = 0
+        # Accumulate ES gradient estimate
+        gradient_estimate = {name: torch.zeros_like(val) for name, val in self.original_values.items()}
+        num_contributing = 0
 
         for seed in seeds:
-            vote = votes.get(seed, 0)
-            if abs(vote) >= threshold:
-                direction = 1 if vote > 0 else -1
-                # Apply small update in winning direction
-                for i, (name, _) in enumerate(self.evolvable_params.items()):
-                    param_seed = seed + i * 10007
-                    flat_size = self.original_values[name].numel()
-                    idx = torch.arange(flat_size, device=self.device, dtype=torch.int64)
+            # Get fitness difference (required for proper ES)
+            if fitness_diffs is None or seed not in fitness_diffs:
+                continue
 
-                    if use_gaussian:
-                        noise = gaussian_from_hash(param_seed, idx)
-                    else:
-                        noise = noise_from_hash(param_seed, idx)
+            fitness_diff = fitness_diffs[seed]  # F+ - F-
 
-                    noise = noise.view(self.original_values[name].shape)
-                    noise = noise.to(self.original_values[name].dtype)
+            # Skip if difference is negligible
+            if abs(fitness_diff) < 1e-8:
+                continue
 
-                    # Update original values
-                    self.original_values[name] += noise * update_scale * direction
-                    updates_applied += 1
+            num_contributing += 1
+
+            # Accumulate gradient estimate: (F+ - F-) * ε / (2 * σ)
+            for i, name in enumerate(self.evolvable_params.keys()):
+                param_seed = seed + i * 10007
+                flat_size = self.original_values[name].numel()
+                idx = torch.arange(flat_size, device=self.device, dtype=torch.int64)
+
+                if use_gaussian:
+                    noise = gaussian_from_hash(param_seed, idx)
+                else:
+                    noise = noise_from_hash(param_seed, idx)
+
+                noise = noise.view(self.original_values[name].shape)
+                noise = noise.to(self.original_values[name].dtype)
+
+                # ES gradient estimate: (F+ - F-) * noise / (2 * sigma)
+                gradient_estimate[name] += fitness_diff * noise / (2.0 * noise_scale)
+
+        # Apply gradient update (gradient ascent since higher fitness = better)
+        if num_contributing > 0:
+            # Average over contributing seeds and apply learning rate
+            lr = update_scale / num_contributing
+            for name in self.evolvable_params.keys():
+                grad = gradient_estimate[name]
+
+                # Clip gradient to prevent explosion
+                grad_norm = torch.norm(grad).item()
+                max_grad_norm = 1.0  # Maximum gradient norm per parameter
+                if grad_norm > max_grad_norm:
+                    grad = grad * (max_grad_norm / grad_norm)
+
+                # Gradient ASCENT (we want to MAXIMIZE fitness)
+                self.original_values[name] += lr * grad
 
         # Copy updated originals to model
         for name, param in self.evolvable_params.items():
             param.data.copy_(self.original_values[name])
 
-        return updates_applied
+        return num_contributing
 
     def get_param_stats(self) -> Dict[str, Dict[str, float]]:
         """Get statistics about evolvable parameters."""

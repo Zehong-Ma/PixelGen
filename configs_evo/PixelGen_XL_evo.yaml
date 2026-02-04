@@ -49,7 +49,7 @@ evolution:
   # Voting mechanism
   # NOTE: Each seed gets only 1 vote (-1, 0, or +1), so threshold must be 1
   vote_threshold: 1          # Min votes to update weight
-  update_scale: 0.001        # Magnitude of weight update
+  update_scale: 0.005        # Magnitude of weight update - 5x increase for faster learning
 
   # Evaluation settings
   eval_batch_size: 4         # Samples per fitness evaluation

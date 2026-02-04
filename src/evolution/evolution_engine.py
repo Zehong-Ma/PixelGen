@@ -76,6 +76,7 @@ class GenerationResult:
     ties: int
     noise_scale: float
     elapsed_time: float
+    avg_fitness_diff: float = 0.0  # Average |pos - neg| fitness difference
 
     def to_dict(self) -> Dict[str, float]:
         return {
@@ -89,6 +90,7 @@ class GenerationResult:
             'ties': self.ties,
             'noise_scale': self.noise_scale,
             'elapsed_time': self.elapsed_time,
+            'avg_fitness_diff': self.avg_fitness_diff,
         }
 
 
@@ -263,6 +265,8 @@ class PixelGenEvolution:
         # Track votes and fitness scores
         votes: Dict[int, int] = defaultdict(int)
         all_fitness: List[float] = []
+        fitness_diffs: List[float] = []  # Track |pos - neg| differences for logging
+        signed_fitness_diffs: Dict[int, float] = {}  # Track (pos - neg) for weighted updates
         positive_wins = 0
         negative_wins = 0
         ties = 0
@@ -302,6 +306,11 @@ class PixelGenEvolution:
             vote = self.fitness_evaluator.compare_pair(fitness_pos, fitness_neg)
             votes[seed] = vote
 
+            # Track fitness difference for diagnostics AND weighted updates
+            signed_diff = fitness_pos.total_fitness - fitness_neg.total_fitness
+            signed_fitness_diffs[seed] = signed_diff  # For weighted updates
+            fitness_diffs.append(abs(signed_diff))  # For logging
+
             if vote > 0:
                 positive_wins += 1
             elif vote < 0:
@@ -311,18 +320,21 @@ class PixelGenEvolution:
 
             all_fitness.extend([fitness_pos.total_fitness, fitness_neg.total_fitness])
 
-        # Update weights based on votes
+        # Update weights using proper ES gradient estimate
         num_updates = self.perturbation_handler.update_from_votes(
             votes=votes,
             seeds=seeds,
             threshold=self.config.vote_threshold,
             update_scale=self.config.update_scale,
+            noise_scale=self.state.current_noise_scale,  # Needed for proper gradient estimate
+            fitness_diffs=signed_fitness_diffs,
         )
 
         # Compute statistics
         mean_fitness = sum(all_fitness) / len(all_fitness)
         best_fitness = max(all_fitness)
         worst_fitness = min(all_fitness)
+        avg_fitness_diff = sum(fitness_diffs) / len(fitness_diffs) if fitness_diffs else 0.0
 
         # Update state
         self.state.fitness_history.append(mean_fitness)
@@ -354,6 +366,7 @@ class PixelGenEvolution:
             ties=ties,
             noise_scale=self.state.current_noise_scale,
             elapsed_time=elapsed,
+            avg_fitness_diff=avg_fitness_diff,
         )
 
     def run(
@@ -376,6 +389,25 @@ class PixelGenEvolution:
 
         print(f"\n[PixelGenEvolution] Starting evolution for {num_generations} generations")
         print("=" * 60)
+
+        # Evaluate baseline before training starts
+        print("\n[Baseline Evaluation] Measuring initial model state...")
+        baseline = self.evaluate_current(num_batches=3)
+        print(f"  Initial FM Loss:   {baseline.raw_fm_loss:.4f}")
+        print(f"  Initial LPIPS:     {baseline.raw_lpips_loss:.4f}")
+        print(f"  Initial DINO Loss: {baseline.raw_dino_loss:.4f}")
+        print(f"  Initial SSIM:      {baseline.raw_ssim_score:.4f}")
+        print(f"  Initial Fitness:   {baseline.total_fitness:.4f}")
+        print("=" * 60)
+
+        if self.wandb_run is not None:
+            self.wandb_run.log({
+                'baseline/fm_loss': baseline.raw_fm_loss,
+                'baseline/lpips': baseline.raw_lpips_loss,
+                'baseline/dino_loss': baseline.raw_dino_loss,
+                'baseline/ssim': baseline.raw_ssim_score,
+                'baseline/fitness': baseline.total_fitness,
+            }, step=0)
 
         total_start = time.time()
 
@@ -421,12 +453,28 @@ class PixelGenEvolution:
 
     def _log_generation(self, result: GenerationResult):
         """Log generation results to console."""
+        # Get current model's raw loss for monitoring
+        current_eval = self.evaluate_current(num_batches=1)
+        raw_fm_loss = current_eval.raw_fm_loss
+        raw_lpips = current_eval.raw_lpips_loss
+
         print(f"Gen {result.generation:4d} | "
               f"Fitness: {result.mean_fitness:.4f} (best: {result.best_fitness:.4f}) | "
               f"Votes: +{result.positive_wins}/-{result.negative_wins}/={result.ties} | "
               f"Updates: {result.num_updates} | "
               f"σ: {result.noise_scale:.5f} | "
+              f"FM_loss: {raw_fm_loss:.4f} | "
+              f"LPIPS: {raw_lpips:.4f} | "
               f"Time: {result.elapsed_time:.1f}s")
+
+        # Log raw losses to wandb for tracking
+        if self.wandb_run is not None:
+            self.wandb_run.log({
+                'loss/raw_fm_loss': raw_fm_loss,
+                'loss/raw_lpips': raw_lpips,
+                'loss/raw_dino': current_eval.raw_dino_loss,
+                'loss/raw_ssim': 1.0 - current_eval.raw_ssim_score,
+            }, step=result.generation)
 
     def save_checkpoint(self, name: str):
         """Save checkpoint with evolved weights and state."""

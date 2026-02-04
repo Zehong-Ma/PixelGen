@@ -7,3 +7,5 @@ pretrained_weights
 wandb
 merge_weight.py
 *.pyc
+/evolution_output
+/hybrid_output

@@ -151,8 +151,8 @@ class EvolutionConfig:
     noise_min: float = 1e-5               # Minimum noise scale
 
     # Voting threshold for weight updates
-    vote_threshold: int = 3               # Min votes to update weight
-    update_scale: float = 0.001           # Weight update magnitude
+    vote_threshold: int = 1               # Min votes to update weight (1 = any win triggers update)
+    update_scale: float = 0.005           # Weight update magnitude (increased 5x for faster learning)
 
     # Timestep sampling for fitness evaluation
     t_sampling: str = 'lognormal'         # 'uniform' or 'lognormal'
