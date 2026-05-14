@@ -1,0 +1,135 @@
+# PixelGen Evolutionary Training Configuration
+#
+# This config replaces gradient-based training with fitness-function optimization.
+# Uses antithetic sampling with voting-based weight updates (EggRoll-style).
+
+# ============================================================================
+# MODEL CONFIGURATION (same as standard PixelGen)
+# ============================================================================
+model:
+  denoiser:
+    model_name: "JiT-L/16"  # Options: JiT-B/16, JiT-L/16, JiT-H/16
+    input_size: 256
+    patch_size: 16
+    hidden_size: 1024
+    depth: 24
+    num_heads: 16
+    mlp_ratio: 4.0
+    num_classes: 1000
+    in_context_len: 32
+    in_context_start: 8
+    bottleneck_dim: 128
+    use_bottleneck: true
+
+  scheduler:
+    type: "linear"  # Linear flow matching
+
+# ============================================================================
+# DATA CONFIGURATION
+# ============================================================================
+data:
+  train_data_dir: "/data/imagenet/train"
+  train_batch_size: 4  # Per-evaluation batch
+  train_num_workers: 4
+  img_size: 256
+
+# ============================================================================
+# EVOLUTION CONFIGURATION
+# ============================================================================
+evolution:
+  # Population settings
+  population_size: 8         # Number of candidates (must be even for antithetic)
+  num_generations: 1000      # Total evolution steps
+
+  # Noise schedule (perturbation magnitude)
+  noise_scale: 0.01          # Initial perturbation scale
+  noise_decay: 0.995         # Exponential decay per generation
+  noise_min: 0.00001         # Minimum noise (prevents collapse)
+
+  # Voting mechanism
+  # NOTE: Each seed gets only 1 vote (-1, 0, or +1), so threshold must be 1
+  vote_threshold: 1          # Min votes to update weight
+  update_scale: 0.005        # Magnitude of weight update - 5x increase for faster learning
+
+  # Evaluation settings
+  eval_batch_size: 4         # Samples per fitness evaluation
+  num_eval_batches: 2        # Batches to average (more = stable but slow)
+
+  # Logging and checkpointing
+  checkpoint_every: 50       # Save every N generations
+  log_every: 10              # Print metrics every N generations
+
+  # Early stopping
+  patience: 100              # Gens without improvement before stopping
+  min_improvement: 0.0001    # Minimum fitness delta to count as improvement
+
+  # Fitness function weights
+  fitness:
+    # Higher weights = more important for fitness
+    w_flow_matching: 0.35    # Velocity prediction accuracy
+    w_lpips: 0.30            # Local perceptual quality (VGG features)
+    w_dino: 0.25             # Global semantic alignment (DINOv2)
+    w_ssim: 0.10             # Structural similarity
+
+    # Noise gating (perceptual losses unreliable at high noise)
+    percept_t_threshold: 0.3 # Only use perceptual for t >= 0.3
+
+    # DINO settings
+    dino_layers: [11]        # Which DINO layers to use
+    dino_base_patch_size: 16
+
+    # LPIPS settings
+    lpips_net: "vgg"         # VGG backbone
+
+# ============================================================================
+# SELECTIVE LAYER EVOLUTION
+# ============================================================================
+layer_selection:
+  # Which layer groups to evolve (true = evolve, false = freeze)
+  evolve_final_layer: true        # FinalLayer (reconstruction head)
+  evolve_in_context_tokens: true  # Class-conditional tokens
+  evolve_late_attention: true     # Last N attention layers
+  evolve_adaln_modulation: true   # Time/class conditioning gates
+  evolve_mlp: false               # SwiGLU FFN (expensive, usually not needed)
+  evolve_embedders: false         # t/y embedders
+  evolve_patch_embed: false       # Patch embedding (rarely needed)
+
+  # How many "late" layers to evolve (from end)
+  num_late_layers: 4              # Last 4 transformer blocks
+
+  # Within attention, what to evolve
+  evolve_qkv: true                # Q, K, V projections
+  evolve_proj: true               # Output projection
+
+# ============================================================================
+# HARDWARE
+# ============================================================================
+hardware:
+  device: "cuda"
+  dtype: "bfloat16"              # Options: float32, float16, bfloat16
+  seed: 42
+
+# ============================================================================
+# NOTES ON HYPERPARAMETERS
+# ============================================================================
+#
+# POPULATION_SIZE:
+#   - Larger = more stable gradients, but slower
+#   - 8 is good default, try 16-32 if fitness oscillates
+#
+# NOISE_SCALE:
+#   - Too high = destructive perturbations
+#   - Too low = slow exploration
+#   - 0.01 works well for PixelGen
+#
+# VOTE_THRESHOLD:
+#   - Higher = more conservative updates
+#   - Lower = faster but noisier
+#   - 3-5 is typical
+#
+# LAYER SELECTION:
+#   - Start with final_layer + in_context + late_attention
+#   - Add mlp if you need more capacity
+#   - Don't evolve patch_embed unless necessary (large, foundational)
+#
+# ============================================================================

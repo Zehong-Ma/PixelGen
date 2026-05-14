@@ -1,8 +1,11 @@
 Qwen
-tools
+tools/*
+!tools/vast-cloud-training/
 ckpts
 universal_pix_workdirs
 pretrained_weights
 wandb
 merge_weight.py
 *.pyc
+/evolution_output
+/hybrid_output

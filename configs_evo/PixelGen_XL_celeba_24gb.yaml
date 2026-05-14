@@ -1,0 +1,133 @@
+# PixelGen Evolutionary Training - CelebA - Optimized for RTX 4000 24GB
+#
+# Maximizes batch sizes for 24GB VRAM using gradient-free evolution.
+# CelebA dataset: 202,599 face images, unconditional generation.
+
+# ============================================================================
+# MODEL CONFIGURATION
+# ============================================================================
+model:
+  denoiser:
+    model_name: "JiT-L/16"
+    input_size: 256           # Upscale CelebA 178x218 → 256x256
+    patch_size: 16
+    hidden_size: 1024
+    depth: 24
+    num_heads: 16
+    mlp_ratio: 4.0
+    num_classes: 1             # Unconditional (single "face" class)
+    in_context_len: 32
+    in_context_start: 8
+    bottleneck_dim: 128
+    use_bottleneck: true
+
+  scheduler:
+    type: "linear"
+
+# ============================================================================
+# DATA CONFIGURATION - CelebA
+# ============================================================================
+data:
+  dataset_type: "folder"      # Simple folder of images
+  train_data_dir: "/home/johndpope/Documents/GitHub/hrr-titans/data/celeba/img_align_celeba"
+  train_batch_size: 96        # MAXIMIZED for 24GB (uses ~16GB)
+  train_num_workers: 8        # More workers for faster loading
+  img_size: 256
+  center_crop: true           # Crop to square before resize
+
+# ============================================================================
+# EVOLUTION CONFIGURATION - MAXIMIZED FOR RTX 4000 24GB
+# ============================================================================
+evolution:
+  # Population settings - INCREASED for better sampling in high-dim space
+  population_size: 128         # Larger population = more stable fitness estimates (was 64)
+  num_generations: 2000        # More generations for convergence
+
+  # Noise schedule - INCREASED for stronger signal
+  noise_scale: 0.01            # Increased for detectable fitness differences (was 0.008)
+  noise_decay: 0.998           # Slower decay
+  noise_min: 0.00001
+
+  # Voting mechanism
+  # NOTE: Each seed gets only 1 vote (-1, 0, or +1), so threshold must be 1
+  vote_threshold: 1
+  update_scale: 0.005          # Weight update magnitude - 5x increase for faster learning (was 0.001)
+
+  # Evaluation settings - MAXIMIZED FOR 24GB
+  eval_batch_size: 96          # Uses ~16GB VRAM (8GB headroom)
+  num_eval_batches: 2          # 2 batches = 192 samples per fitness eval
+
+  # Memory optimization
+  sequential_eval: true        # Evaluate one candidate at a time (saves VRAM)
+  gradient_checkpointing: false # Not needed - no gradients!
+
+  # Logging
+  checkpoint_every: 50
+  log_every: 10
+  log_images_every: 25         # More frequent image logging
+  num_sample_images: 8         # More samples per log
+  sample_steps: 20             # Fewer steps for faster preview
+
+  # Early stopping
+  patience: 200                # More patience for face learning
+  min_improvement: 0.00005
+
+  # Fitness function - TUNED FOR FACES
+  fitness:
+    w_flow_matching: 0.30      # Slightly less weight on raw FM
+    w_lpips: 0.35              # More weight on perceptual (faces need detail)
+    w_dino: 0.25               # Semantic consistency
+    w_ssim: 0.10               # Structure
+
+    percept_t_threshold: 0.25  # Use perceptual earlier for faces
+
+    dino_layers: [9, 11]       # Multiple layers for faces
+    dino_base_patch_size: 16
+    lpips_net: "vgg"
+
+# ============================================================================
+# SELECTIVE LAYER EVOLUTION - FACES NEED DIFFERENT LAYERS
+# ============================================================================
+layer_selection:
+  evolve_final_layer: true
+  evolve_in_context_tokens: true
+  evolve_late_attention: true
+  evolve_adaln_modulation: true
+  evolve_mlp: false
+  evolve_embedders: false
+  evolve_patch_embed: false
+
+  num_late_layers: 6           # More layers for face details
+
+  evolve_qkv: true
+  evolve_proj: true
+
+# ============================================================================
+# HARDWARE - RTX 4000 24GB
+# ============================================================================
+hardware:
+  device: "cuda"
+  dtype: "bfloat16"
+  seed: 42
+
+  # Memory optimizations
+  empty_cache_freq: 10         # Clear CUDA cache every N evaluations
+  pin_memory: true
+  prefetch_factor: 4
+
+# ============================================================================
+# MEASURED MEMORY USAGE (24GB RTX 4000)
+# ============================================================================
+# Full fitness evaluation (model + LPIPS + DINO):
+#   Batch 64:  ~11 GB
+#   Batch 96:  ~16 GB  <-- RECOMMENDED (8GB headroom)
+#   Batch 128: ~21 GB  (tight, may OOM on edge cases)
+#
+# With sequential_eval=true, we evaluate one candidate at a time,
+# so memory stays constant regardless of population_size.
+#
+# Throughput at batch_size=96:
+#   - 192 images per fitness evaluation (2 batches × 96)
+#   - 64 candidates per generation (32 pairs)
+#   - ~12,288 images processed per generation
+# ============================================================================

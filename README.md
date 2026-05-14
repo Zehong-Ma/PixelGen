@@ -90,8 +90,85 @@ To host the local gradio demo, run the following command:
 python app.py --config ./configs_t2i/sft_res512.yaml --ckpt_path=./ckpts/PixelGen_XXL_T2I.ckpt
 ```
 
-## 🤖 Usages
-In class-to-image(ImageNet) experiments, We use [ADM evaluation suite](https://github.com/openai/guided-diffusion/tree/main/evaluations) to report FID. 
+## 🧬 Evolution Training (NEW!)
+
+We've added **gradient-free evolutionary training** as an alternative to backpropagation. This achieves **75% memory reduction** while enabling training on consumer GPUs.
+
+### Key Features
+- **No gradients**: Pure fitness-based optimization
+- **75% less memory**: Train larger models on smaller GPUs
+- **51x faster inference**: Optimized sampling with bfloat16 + batching
+- **W&B integration**: Visual training progress with generated images
+
+### Quick Start (Local)
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Quick test with synthetic data
+python train_evo.py --config configs_evo/PixelGen_XL_evo.yaml \
+    --quick-test --synthetic --wandb
+
+# Full training with ImageNet
+python train_evo.py --config configs_evo/PixelGen_XL_evo.yaml \
+    --generations 1000 --wandb
+```
+
+### Fast Inference
+```python
+from src.speedup import FastEulerSampler, SamplerConfig
+
+# Configure sampler (10 steps, bfloat16 = 10x faster)
+config = SamplerConfig(num_steps=10, adaptive_steps=True)
+sampler = FastEulerSampler(config)
+
+# Generate images
+model = model.to(dtype=torch.bfloat16)
+images = sampler.sample(model, noise, class_labels)
+```
+
+### Speedup Results (RTX 5090, 256×256)
+| Configuration | Time/Image | Speedup |
+|--------------|------------|---------|
+| Baseline (50 steps, fp32) | 786 ms | 1.0x |
+| 10 steps, bf16 | 73 ms | **10.7x** |
+| 5 steps, bf16, batch=8 | 15 ms | **51.2x** |
+
+📄 **Full documentation**: [docs/EVOLUTION_AND_SPEEDUP_WHITEPAPER.md](docs/EVOLUTION_AND_SPEEDUP_WHITEPAPER.md)
+
+---
+
+## ☁️ Cloud Training (Vast.ai)
+
+Train on cloud GPUs with automatic checkpoint sync to S3.
+
+### One-Command Setup
+```bash
+# On Vast.ai instance (after setting AWS credentials)
+export AWS_ACCESS_KEY_ID="your_key"
+export AWS_SECRET_ACCESS_KEY="your_secret"
+export WANDB_API_KEY="your_wandb_key"
+
+curl -sSL https://raw.githubusercontent.com/johndpope/PixelGen/main/tools/vast-cloud-training/setup_vastai_pixelgen.sh | bash
+```
+
+### Start Training
+```bash
+cd /workspace/PixelGen
+bash tools/vast-cloud-training/scripts/train_pixelgen_evo.sh
+```
+
+### Download Checkpoints Locally
+```bash
+bash tools/vast-cloud-training/scripts/download_checkpoints.sh ./my_checkpoints
+```
+
+📄 **Cloud training guide**: [tools/vast-cloud-training/README.md](tools/vast-cloud-training/README.md)
+
+---
+
+## 🤖 Standard Training (Gradient-Based)
+In class-to-image(ImageNet) experiments, We use [ADM evaluation suite](https://github.com/openai/guided-diffusion/tree/main/evaluations) to report FID.
 In text-to-image experiments, we use BLIP3o dataset as training set and utilize GenEval to collect metrics.
 
 + Environments
